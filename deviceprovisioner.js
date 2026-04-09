@@ -23,7 +23,7 @@
  * em `node.hwid` e na coleção `sysinfo` da DB, acessível via db.GetSysInfo().
  */
 
-module.exports.createPlugin = function (parent) {
+module.exports['meshcentral-deviceprovisioner'] = function (parent) {
     const plugin = { name: 'deviceprovisioner' };
     const https = require('https');
     const http = require('http');
