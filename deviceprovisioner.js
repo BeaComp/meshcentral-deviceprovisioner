@@ -260,7 +260,7 @@ module.exports.deviceprovisioner = function (parent) {
         if (!quarantineMeshId) return;
 
         // 'meshchange' é o evento emitido quando um dispositivo muda de grupo
-        if (event.action !== 'meshchange') return;
+        if (event.action !== 'changenode') return;
 
         // O dispositivo veio do grupo de quarentena?
         if (event.oldmeshid !== quarantineMeshId) return;
