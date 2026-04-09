@@ -5,13 +5,13 @@
   "author": "Tu",
   "description": "Deteta quando um dispositivo é movido do grupo de quarentena para um grupo aprovado e chama uma API de provisionamento com as informações do dispositivo.",
   "hasAdminPanel": true,
-  "homepage": "https://github.com/tu/meshcentral-deviceprovisioner",
-  "changelogUrl": "https://raw.githubusercontent.com/tu/meshcentral-deviceprovisioner/master/CHANGELOG.md",
-  "configUrl": "https://raw.githubusercontent.com/tu/meshcentral-deviceprovisioner/master/config.json",
-  "downloadUrl": "https://github.com/tu/meshcentral-deviceprovisioner/archive/master.zip",
+  "homepage": "https://github.com/BeaComp/meshcentral-deviceprovisioner",
+  "changelogUrl": "https://raw.githubusercontent.com/BeaComp/meshcentral-deviceprovisioner/main/CHANGELOG.md",
+  "configUrl": "https://raw.githubusercontent.com/BeaComp/meshcentral-deviceprovisioner/main/config.json",
+  "downloadUrl": "https://github.com/BeaComp/meshcentral-deviceprovisioner/archive/main.zip",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tu/meshcentral-deviceprovisioner.git"
+    "url": "https://github.com/BeaComp/meshcentral-deviceprovisioner.git"
   },
   "meshCentralCompat": ">=1.0.0",
 
