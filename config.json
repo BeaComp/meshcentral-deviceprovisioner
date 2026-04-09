@@ -1,0 +1,27 @@
+{
+  "name": "Device Provisioner",
+  "shortName": "deviceprovisioner",
+  "version": "1.0.0",
+  "author": "Tu",
+  "description": "Deteta quando um dispositivo é movido do grupo de quarentena para um grupo aprovado e chama uma API de provisionamento com as informações do dispositivo.",
+  "hasAdminPanel": true,
+  "homepage": "https://github.com/tu/meshcentral-deviceprovisioner",
+  "changelogUrl": "https://raw.githubusercontent.com/tu/meshcentral-deviceprovisioner/master/CHANGELOG.md",
+  "configUrl": "https://raw.githubusercontent.com/tu/meshcentral-deviceprovisioner/master/config.json",
+  "downloadUrl": "https://github.com/tu/meshcentral-deviceprovisioner/archive/master.zip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tu/meshcentral-deviceprovisioner.git"
+  },
+  "meshCentralCompat": ">=1.0.0",
+
+  "pluginConfig": {
+    "quarantineMeshName": "quarentena",
+    "provisioningApiUrl": "https://webhook.site/0df14bbb-1576-4d14-b055-2c778d323e46",
+    "provisioningApiToken": "Bearer teste",
+    "apiTimeoutMs": 10000,
+    "retryOnFailure": true,
+    "maxRetries": 3,
+    "logLevel": "info"
+  }
+}
