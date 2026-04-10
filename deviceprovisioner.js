@@ -292,11 +292,8 @@ module.exports.deviceprovisioner = function (parent) {
             }
         });
 
-        // Subscrever eventos internos do MeshCentral
-        if (parent.parent && parent.parent.AddEventDispatch) {
-            parent.parent.AddEventDispatch(['*'], plugin);
-            log('info', 'Listener de eventos registado.');
-        }
+        // Iniciar polling para detetar mudanças de grupo
+        startPolling();
 
         log('info', 'Plugin DeviceProvisioner iniciado.');
     };
@@ -304,48 +301,65 @@ module.exports.deviceprovisioner = function (parent) {
     // -------------------------------------------------------------------------
     // Receção de eventos do servidor
     // -------------------------------------------------------------------------
-    // Cache do meshid anterior de cada node (key: nodeId, value: meshId)
-    // Necessário porque o evento 'changenode' apenas contém o meshid ATUAL,
-    // não o anterior. Guardamos ao receber 'addnode' e atualizamos a cada 'changenode'.
+    // Cache: nodeId -> último meshId conhecido (para detetar mudança de grupo)
     let nodeLastMesh = {};
+    let pollingTimer = null;
 
-    plugin.HandleEvent = function (event, domain) {
-        if (!event || !event.action) return;
+    // -------------------------------------------------------------------------
+    // Polling periódico à DB para detetar mudanças de grupo
+    // Lê todos os nodes da quarentena e verifica se algum mudou de grupo.
+    // Esta abordagem é robusta e não depende do sistema de eventos interno.
+    // -------------------------------------------------------------------------
+    function startPolling() {
+        if (pollingTimer) return; // já está a correr
+        pollingTimer = setInterval(function () {
+            pollForGroupChanges();
+        }, 5000); // verifica a cada 5 segundos
+        log('info', 'Polling iniciado (intervalo: 5s).');
+    }
 
-        const action = event.action;
-        const node   = event.node;
-        const nodeId = event.nodeid || (node && node._id);
+    function pollForGroupChanges() {
+        if (!quarantineMeshId) return;
+        const db = parent.parent && parent.parent.db;
+        if (!db || typeof db.GetAllNodes !== 'function') return;
 
-        // Registar/atualizar o meshid de cada node quando o MeshCentral o anuncia
-        if ((action === 'addnode' || action === 'changenode') && node && nodeId) {
-            const currentMesh = node.meshid;
-            const previousMesh = nodeLastMesh[nodeId];
+        // Buscar todos os nodes do domínio raiz
+        db.GetAllNodes('', function (err, nodes) {
+            if (err || !nodes) return;
 
-            // LOG DE DIAGNÓSTICO — confirma que os eventos chegam
-            log('info', '[DIAG] ' + action + ' nodeid=' + nodeId +
-                ' meshid=' + (currentMesh || '-') +
-                ' previousMesh=' + (previousMesh || 'desconhecido'));
+            nodes.forEach(function (node) {
+                const nodeId     = node._id;
+                const currentMesh = node.meshid;
+                const prevMesh   = nodeLastMesh[nodeId];
 
-            if (action === 'changenode' && previousMesh && currentMesh &&
-                previousMesh !== currentMesh && quarantineMeshId) {
+                // Primeira vez que vemos este node — apenas registar
+                if (prevMesh === undefined) {
+                    nodeLastMesh[nodeId] = currentMesh;
+                    return;
+                }
 
-                // O device saiu do grupo de quarentena para outro grupo?
-                if (previousMesh === quarantineMeshId && currentMesh !== quarantineMeshId) {
-                    log('info', 'Dispositivo aprovado detetado: node=' + nodeId +
-                        ', de ' + previousMesh + ' para ' + currentMesh);
+                // Mesh não mudou
+                if (prevMesh === currentMesh) return;
+
+                // Mesh mudou — atualizar cache
+                nodeLastMesh[nodeId] = currentMesh;
+
+                log('info', '[POLL] Node ' + nodeId +
+                    ' mudou de ' + prevMesh + ' para ' + currentMesh);
+
+                // Veio da quarentena para outro grupo?
+                if (prevMesh === quarantineMeshId && currentMesh !== quarantineMeshId) {
+                    log('info', 'Dispositivo aprovado detetado via polling: node=' +
+                        nodeId + ', de ' + prevMesh + ' para ' + currentMesh);
                     processApproval(nodeId);
                 }
-            }
+            });
+        });
+    }
 
-            // Atualizar o cache DEPOIS de verificar (para ter o "previous" correto)
-            nodeLastMesh[nodeId] = currentMesh;
-        }
+    // HandleEvent mantido por compatibilidade mas não é o mecanismo principal
+    plugin.HandleEvent = function (event, domain) { };
 
-        // Limpar cache quando um node é removido
-        if (action === 'removenode' && nodeId) {
-            delete nodeLastMesh[nodeId];
-        }
-    };
     // -------------------------------------------------------------------------
     // HOOK: hook_agentCoreIsStable
     // -------------------------------------------------------------------------
