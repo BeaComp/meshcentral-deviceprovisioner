@@ -11,30 +11,21 @@
  *   - server_startup              → inicialização e carregamento de config
  *   - hook_agentCoreIsStable      → detetar novos agentes e registar o seu meshid inicial
  *   - hook_setupHttpHandlers      → expor endpoint de admin para configurar o plugin
- *
- * A deteção de mudança de grupo é feita via evento interno 'meshchange'
- * do servidor MeshCentral, acessível através do objeto parent.parent.
- *
- * NOTA SOBRE DADOS DO DISPOSITIVO:
- * O objeto `node` na DB do MeshCentral contém tipicamente:
- *   _id, name, meshid, domain, agent (version, id), rname,
- *   intelamt, tags, icon, desc, mtype
- * Os dados de hardware (MACs, serial, CPU) chegam via sysinfo e ficam
- * em `node.hwid` e na coleção `sysinfo` da DB, acessível via db.GetSysInfo().
  */
 
-module.exports.deviceprovisioner = function (parent) {    
+module.exports.createPlugin = function (parent) {
     const plugin = { name: 'deviceprovisioner' };
     const https = require('https');
     const http = require('http');
     const url = require('url');
+    const path = require('path');
 
     // -------------------------------------------------------------------------
     // Estado interno
     // -------------------------------------------------------------------------
-    let config = {};           // configuração carregada do config.json
-    let quarantineMeshId = null;       // _id resolvido do grupo de quarentena
-    let pendingRetries = {};           // { nodeId: { attempts, payload } }
+    let config = {};
+    let quarantineMeshId = null;
+    let pendingRetries = {};
 
     // -------------------------------------------------------------------------
     // Utilitários de log
@@ -49,48 +40,112 @@ module.exports.deviceprovisioner = function (parent) {
     }
 
     // -------------------------------------------------------------------------
-    // Carregar configuração do config.json do plugin
+    // CORREÇÃO 1: Carregar configuração de forma robusta
+    // Tenta 3 fontes por ordem de prioridade:
+    //   1. pluginsConfig no config.json do servidor (domínio raiz)
+    //   2. pluginsConfig em qualquer domínio configurado
+    //   3. pluginConfig no config.json do próprio plugin
     // -------------------------------------------------------------------------
     function loadConfig() {
         try {
-            // parent.parent é o objeto MeshCentral principal (meshcentral.js)
-            // parent.pluginHandler.pluginConfig contém a config do plugin instalado
-            const raw = parent.pluginHandler.pluginConfig['deviceprovisioner'] || {};
+            let raw = null;
+
+            // Fonte 1: config.json do servidor → domains[""].pluginsConfig.deviceprovisioner
+            const serverConfig = parent.parent && parent.parent.config;
+            if (serverConfig && serverConfig.domains) {
+                for (const domainKey of Object.keys(serverConfig.domains)) {
+                    const domain = serverConfig.domains[domainKey];
+                    if (domain && domain.pluginsConfig && domain.pluginsConfig.deviceprovisioner) {
+                        raw = domain.pluginsConfig.deviceprovisioner;
+                        log('info', `Configuração carregada do servidor (domínio: "${domainKey}")`);
+                        break;
+                    }
+                }
+            }
+
+            // Fonte 2: config.json do próprio plugin (campo pluginConfig)
+            if (!raw) {
+                try {
+                    const pluginConfigFile = require(path.join(__dirname, 'config.json'));
+                    if (pluginConfigFile && pluginConfigFile.pluginConfig) {
+                        raw = pluginConfigFile.pluginConfig;
+                        log('info', 'Configuração carregada do config.json do plugin.');
+                    }
+                } catch (e2) {
+                    log('warn', 'Não foi possível ler config.json do plugin: ' + e2.message);
+                }
+            }
+
             config = Object.assign({
                 quarantineMeshName: 'quarentena',
+                quarantineMeshId: null,
                 provisioningApiUrl: '',
                 provisioningApiToken: '',
                 apiTimeoutMs: 10000,
                 retryOnFailure: true,
                 maxRetries: 3,
                 logLevel: 'info'
-            }, raw);
-            log('info', 'Configuração carregada:', config);
+            }, raw || {});
+
+            // Se o config.json do servidor já tiver o meshId direto, usamo-lo
+            if (config.quarantineMeshId) {
+                quarantineMeshId = config.quarantineMeshId;
+                log('info', `quarantineMeshId definido diretamente na config: ${quarantineMeshId}`);
+            }
+
+            log('info', 'Configuração final:', config);
         } catch (e) {
-            log('error', 'Erro ao carregar configuração:', e.message);
+            log('error', 'Erro ao carregar configuração: ' + e.message);
         }
     }
 
     // -------------------------------------------------------------------------
-    // Resolver o _id interno do grupo de quarentena pelo nome
+    // CORREÇÃO 2: Resolver o _id do grupo de quarentena
+    // Usa parent.parent.meshes (em memória) em vez de GetAllMeshes (DB),
+    // evitando problemas de timing e assinaturas incorretas.
     // -------------------------------------------------------------------------
     function resolveQuarantineMeshId(callback) {
-        // parent.parent.db é o objeto de acesso à base de dados
-        parent.parent.db.GetAllMeshes('', function (err, meshes) {
-            if (err || !meshes) {
-                log('error', 'Erro ao listar grupos:', err);
-                return callback(null);
+        // Se já temos o ID da config, não precisamos de pesquisar
+        if (quarantineMeshId) {
+            return callback(quarantineMeshId);
+        }
+
+        // Tentar usar o objeto em memória parent.parent.meshes
+        const meshes = parent.parent && parent.parent.meshes;
+        if (meshes && typeof meshes === 'object') {
+            const keys = Object.keys(meshes);
+            for (const key of keys) {
+                const m = meshes[key];
+                if (m && (m.name || '').toLowerCase() === config.quarantineMeshName.toLowerCase()) {
+                    log('info', `Grupo de quarentena resolvido (memória): ${m._id}`);
+                    return callback(m._id);
+                }
             }
-            const match = meshes.find(function (m) {
-                return (m.name || '').toLowerCase() === config.quarantineMeshName.toLowerCase();
+        }
+
+        // Fallback: tentar via DB se GetAllMeshes existir
+        const db = parent.parent && parent.parent.db;
+        if (db && typeof db.GetAllMeshes === 'function') {
+            db.GetAllMeshes('', function (err, meshList) {
+                if (err || !meshList) {
+                    log('error', 'Erro ao listar grupos via DB: ' + (err || 'lista vazia'));
+                    return callback(null);
+                }
+                const match = meshList.find(function (m) {
+                    return (m.name || '').toLowerCase() === config.quarantineMeshName.toLowerCase();
+                });
+                if (!match) {
+                    log('warn', `Grupo "${config.quarantineMeshName}" não encontrado. Cria o grupo e recarrega o plugin.`);
+                    return callback(null);
+                }
+                log('info', `Grupo de quarentena resolvido (DB): ${match._id}`);
+                callback(match._id);
             });
-            if (!match) {
-                log('warn', `Grupo de quarentena "${config.quarantineMeshName}" não encontrado. Cria o grupo e reinicia o plugin.`);
-                return callback(null);
-            }
-            log('info', `Grupo de quarentena resolvido: ${match._id}`);
-            callback(match._id);
-        });
+        } else {
+            log('warn', 'parent.parent.meshes vazio e db.GetAllMeshes indisponível. ' +
+                'Define quarantineMeshId diretamente na config ou reinicia após criar o grupo.');
+            callback(null);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -143,7 +198,7 @@ module.exports.deviceprovisioner = function (parent) {
         });
 
         req.on('error', function (e) {
-            log('error', `Erro na chamada à API para ${nodeId}:`, e.message);
+            log('error', `Erro na chamada à API para ${nodeId}: ${e.message}`);
             scheduleRetry(payload, nodeId, attempt);
         });
 
@@ -157,7 +212,7 @@ module.exports.deviceprovisioner = function (parent) {
             delete pendingRetries[nodeId];
             return;
         }
-        const delay = Math.min(30000, 5000 * attempt); // backoff: 5s, 10s, 15s...
+        const delay = Math.min(30000, 5000 * attempt);
         log('info', `Retry em ${delay / 1000}s para ${nodeId} (tentativa ${attempt + 1}/${config.maxRetries})`);
         pendingRetries[nodeId] = { attempt, payload };
         setTimeout(function () {
@@ -169,8 +224,6 @@ module.exports.deviceprovisioner = function (parent) {
     // Montar o payload com todas as informações do dispositivo
     // -------------------------------------------------------------------------
     function buildPayload(node, sysinfo) {
-        // node vem da DB do MeshCentral — campos garantidos:
-        //   _id (node_id), name, meshid, domain, agent.id (tipo de agente)
         const payload = {
             event: 'device_approved',
             timestamp: new Date().toISOString(),
@@ -184,8 +237,6 @@ module.exports.deviceprovisioner = function (parent) {
             hardware: {}
         };
 
-        // sysinfo é a coleção separada que o MeshAgent envia após check-in
-        // contém: hardware.macs, hardware.serialNumber, hardware.cpus, etc.
         if (sysinfo) {
             const hw = sysinfo.hardware || {};
             payload.hardware = {
@@ -208,17 +259,12 @@ module.exports.deviceprovisioner = function (parent) {
     // Processar aprovação: buscar sysinfo e chamar API
     // -------------------------------------------------------------------------
     function processApproval(nodeId) {
-        // 1. Buscar o node na DB
         parent.parent.db.Get(nodeId, function (err, nodes) {
             if (err || !nodes || nodes.length === 0) {
-                log('error', `Não foi possível obter o node ${nodeId} da DB:`, err);
+                log('error', `Não foi possível obter o node ${nodeId} da DB: ${err}`);
                 return;
             }
             const node = nodes[0];
-
-            // 2. Buscar sysinfo (informações de hardware) — pode ainda não existir
-            //    se o agente não enviou ainda. Tentamos na mesma; o payload terá
-            //    hardware:{} vazio nesse caso.
             parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
                 const payload = buildPayload(node, sysinfo);
                 callProvisioningApi(payload, nodeId, 1);
@@ -228,22 +274,26 @@ module.exports.deviceprovisioner = function (parent) {
 
     // -------------------------------------------------------------------------
     // HOOK: server_startup
-    // Chamado uma vez quando o servidor inicia ou o plugin é instalado.
     // -------------------------------------------------------------------------
     plugin.server_startup = function () {
         loadConfig();
 
-        // Resolver o ID do grupo de quarentena
+        // Tentar resolver logo; se falhar, tentar novamente após 5s (DB pode
+        // ainda não estar pronta no momento exato do startup)
         resolveQuarantineMeshId(function (meshId) {
             quarantineMeshId = meshId;
+            if (!meshId) {
+                log('warn', 'Grupo de quarentena não resolvido no startup — nova tentativa em 5s.');
+                setTimeout(function () {
+                    resolveQuarantineMeshId(function (id) {
+                        quarantineMeshId = id;
+                    });
+                }, 5000);
+            }
         });
 
         // Subscrever eventos internos do MeshCentral
-        // 'meshchange' é emitido pelo webserver.js sempre que um node muda de mesh
-        // Formato do evento: { meshid: novoMeshId, oldmeshid: meshIdAnterior, nodeid: ... }
         if (parent.parent && parent.parent.AddEventDispatch) {
-            // AddEventDispatch regista um listener para eventos de um domínio
-            // Os eventos de mudança de node são emitidos em todos os domínios
             parent.parent.AddEventDispatch(['*'], plugin);
             log('info', 'Listener de eventos registado.');
         }
@@ -252,20 +302,12 @@ module.exports.deviceprovisioner = function (parent) {
     };
 
     // -------------------------------------------------------------------------
-    // Receção de eventos do servidor (via AddEventDispatch)
-    // O MeshCentral emite eventos no formato { action, nodeid, meshid, ... }
+    // Receção de eventos do servidor
     // -------------------------------------------------------------------------
     plugin.ProcessEvent = function (event, domain) {
-        // Ignorar se a quarentena ainda não foi resolvida
         if (!quarantineMeshId) return;
-
-        // 'meshchange' é o evento emitido quando um dispositivo muda de grupo
-        if (event.action !== 'changenode') return;
-
-        // O dispositivo veio do grupo de quarentena?
+        if (event.action !== 'meshchange') return;
         if (event.oldmeshid !== quarantineMeshId) return;
-
-        // O novo grupo não pode ser também quarentena (salvaguarda)
         if (event.meshid === quarantineMeshId) return;
 
         log('info', `Dispositivo aprovado detetado: node=${event.nodeid}, de ${event.oldmeshid} → ${event.meshid}`);
@@ -274,13 +316,8 @@ module.exports.deviceprovisioner = function (parent) {
 
     // -------------------------------------------------------------------------
     // HOOK: hook_agentCoreIsStable
-    // Chamado quando um agente faz check-in pela primeira vez (nova sessão).
-    // Usamos para log de diagnóstico — não disparamos API aqui porque o
-    // dispositivo pode ainda estar na quarentena.
     // -------------------------------------------------------------------------
     plugin.hook_agentCoreIsStable = function (meshAgent) {
-        // meshAgent.dbNodeKey  → node_id interno
-        // meshAgent.dbMeshKey  → mesh_id do grupo atual
         const nodeId = meshAgent.dbNodeKey;
         const meshId = meshAgent.dbMeshKey;
 
@@ -292,15 +329,22 @@ module.exports.deviceprovisioner = function (parent) {
     };
 
     // -------------------------------------------------------------------------
-    // HOOK: hook_setupHttpHandlers
-    // Adiciona endpoints de administração do plugin à API REST do MeshCentral.
+    // CORREÇÃO 3: hook_setupHttpHandlers — suporta Express direto ou wrapper
+    // Em versões recentes do MeshCentral o argumento pode ser um objeto
+    // webserver; o Express está em app.expressApp ou app.app.
     // -------------------------------------------------------------------------
     plugin.hook_setupHttpHandlers = function (app) {
 
+        // Resolver o objeto Express correto
+        const express = app && (app.expressApp || app.app || (typeof app.get === 'function' ? app : null));
+        if (!express || typeof express.get !== 'function') {
+            log('warn', 'hook_setupHttpHandlers: não foi possível obter o objeto Express. ' +
+                'Endpoints HTTP do plugin não serão registados.');
+            return;
+        }
+
         // GET /plugin/deviceprovisioner/status
-        // Devolve o estado atual do plugin (config, grupo de quarentena resolvido)
-        app.get('/plugin/deviceprovisioner/status', function (req, res) {
-            // Verificar se o pedido vem de um admin autenticado
+        express.get('/plugin/deviceprovisioner/status', function (req, res) {
             if (!req.session || !req.session.userid) {
                 return res.status(401).json({ error: 'Não autenticado' });
             }
@@ -319,8 +363,7 @@ module.exports.deviceprovisioner = function (parent) {
         });
 
         // POST /plugin/deviceprovisioner/test?nodeId=node//...
-        // Força o envio de um dispositivo à API (para testes sem mover de grupo)
-        app.post('/plugin/deviceprovisioner/test', function (req, res) {
+        express.post('/plugin/deviceprovisioner/test', function (req, res) {
             if (!req.session || !req.session.userid) {
                 return res.status(401).json({ error: 'Não autenticado' });
             }
@@ -333,8 +376,7 @@ module.exports.deviceprovisioner = function (parent) {
         });
 
         // POST /plugin/deviceprovisioner/reload
-        // Recarrega a configuração e re-resolve o grupo de quarentena
-        app.post('/plugin/deviceprovisioner/reload', function (req, res) {
+        express.post('/plugin/deviceprovisioner/reload', function (req, res) {
             if (!req.session || !req.session.userid) {
                 return res.status(401).json({ error: 'Não autenticado' });
             }
