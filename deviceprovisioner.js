@@ -304,14 +304,32 @@ module.exports.deviceprovisioner = function (parent) {
     // -------------------------------------------------------------------------
     // Receção de eventos do servidor
     // -------------------------------------------------------------------------
-    plugin.HandleEvent = function (event, domain) {
-        if (!quarantineMeshId) return;
-        if (event.action !== 'meshchange') return;
-        if (event.oldmeshid !== quarantineMeshId) return;
-        if (event.meshid === quarantineMeshId) return;
+    // Nomes de eventos conhecidos que envolvem mudança de grupo
+    const MOVE_ACTIONS = ['meshchange', 'changegroup', 'nodemeshchange',
+        'nodemove', 'meshnodemove', 'updatenode', 'changeNode'];
 
-        log('info', `Dispositivo aprovado detetado: node=${event.nodeid}, de ${event.oldmeshid} → ${event.meshid}`);
-        processApproval(event.nodeid);
+    plugin.HandleEvent = function (event, domain) {
+        // LOG DE DIAGNÓSTICO — regista todos os eventos com meshid/nodeid
+        // para descobrir o nome exato do evento de mudança de grupo.
+        if (event && (event.meshid || event.nodeid || event.oldmeshid)) {
+            log('info', '[DIAG] action=' + event.action + ' nodeid=' + (event.nodeid || '-') + ' meshid=' + (event.meshid || '-') + ' oldmeshid=' + (event.oldmeshid || '-'));
+        }
+
+        if (!quarantineMeshId) return;
+
+        const action = event.action || '';
+        if (!MOVE_ACTIONS.includes(action)) return;
+
+        const oldMesh = event.oldmeshid || event.oldMeshId || event.previousmeshid;
+        const newMesh = event.meshid || event.newmeshid;
+        const nodeId  = event.nodeid || event.nodeId;
+
+        if (!nodeId || !oldMesh || !newMesh) return;
+        if (oldMesh !== quarantineMeshId) return;
+        if (newMesh === quarantineMeshId) return;
+
+        log('info', 'Dispositivo aprovado detetado: node=' + nodeId + ', de ' + oldMesh + ' para ' + newMesh);
+        processApproval(nodeId);
     };
 
     // -------------------------------------------------------------------------
