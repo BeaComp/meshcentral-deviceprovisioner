@@ -13,7 +13,7 @@
  *   - hook_setupHttpHandlers      → expor endpoint de admin para configurar o plugin
  */
 
-module.exports.createPlugin = function (parent) {
+module.exports.deviceprovisioner = function (parent) {
     const plugin = { name: 'deviceprovisioner' };
     const https = require('https');
     const http = require('http');
