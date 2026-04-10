@@ -16,7 +16,7 @@
   "meshCentralCompat": ">=1.0.0",
 
   "pluginConfig": {
-    "quarantineMeshName": "quarentena",
+    "quarantineMeshId": "a00nGTVUZjtN0fJpjCsJWFFz@7rOyq4kAVvInGMj1p8aLc6xZt6dVmJZ9@jJ1Y09",
     "provisioningApiUrl": "https://webhook.site/0df14bbb-1576-4d14-b055-2c778d323e46",
     "provisioningApiToken": "Bearer teste",
     "apiTimeoutMs": 10000,
