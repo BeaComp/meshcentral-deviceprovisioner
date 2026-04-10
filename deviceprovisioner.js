@@ -321,10 +321,15 @@ module.exports.deviceprovisioner = function (parent) {
     function pollForGroupChanges() {
         if (!quarantineMeshId) return;
         const db = parent.parent && parent.parent.db;
-        if (!db || typeof db.GetAllNodes !== 'function') return;
+        
+        // CORREÇÃO: O MeshCentral usa db.GetAllType em vez de db.GetAllNodes
+        if (!db || typeof db.GetAllType !== 'function') {
+            log('warn', 'Função GetAllType não encontrada na DB do MeshCentral.');
+            return;
+        }
 
-        // Buscar todos os nodes do domínio raiz
-        db.GetAllNodes('', function (err, nodes) {
+        // Buscar todos os documentos do tipo 'node' no domínio raiz ('')
+        db.GetAllType('node', '', function (err, nodes) {
             if (err || !nodes) return;
 
             nodes.forEach(function (node) {
