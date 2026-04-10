@@ -304,7 +304,7 @@ module.exports.deviceprovisioner = function (parent) {
     // -------------------------------------------------------------------------
     // Receção de eventos do servidor
     // -------------------------------------------------------------------------
-    plugin.ProcessEvent = function (event, domain) {
+    plugin.HandleEvent = function (event, domain) {
         if (!quarantineMeshId) return;
         if (event.action !== 'meshchange') return;
         if (event.oldmeshid !== quarantineMeshId) return;
