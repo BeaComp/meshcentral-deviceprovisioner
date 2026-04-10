@@ -304,34 +304,48 @@ module.exports.deviceprovisioner = function (parent) {
     // -------------------------------------------------------------------------
     // Receção de eventos do servidor
     // -------------------------------------------------------------------------
-    // Nomes de eventos conhecidos que envolvem mudança de grupo
-    const MOVE_ACTIONS = ['meshchange', 'changegroup', 'nodemeshchange',
-        'nodemove', 'meshnodemove', 'updatenode', 'changeNode'];
+    // Cache do meshid anterior de cada node (key: nodeId, value: meshId)
+    // Necessário porque o evento 'changenode' apenas contém o meshid ATUAL,
+    // não o anterior. Guardamos ao receber 'addnode' e atualizamos a cada 'changenode'.
+    let nodeLastMesh = {};
 
     plugin.HandleEvent = function (event, domain) {
-        // LOG DE DIAGNÓSTICO — regista todos os eventos com meshid/nodeid
-        // para descobrir o nome exato do evento de mudança de grupo.
-        if (event && (event.meshid || event.nodeid || event.oldmeshid)) {
-            log('info', '[DIAG] action=' + event.action + ' nodeid=' + (event.nodeid || '-') + ' meshid=' + (event.meshid || '-') + ' oldmeshid=' + (event.oldmeshid || '-'));
+        if (!event || !event.action) return;
+
+        const action = event.action;
+        const node   = event.node;
+        const nodeId = event.nodeid || (node && node._id);
+
+        // Registar/atualizar o meshid de cada node quando o MeshCentral o anuncia
+        if ((action === 'addnode' || action === 'changenode') && node && nodeId) {
+            const currentMesh = node.meshid;
+            const previousMesh = nodeLastMesh[nodeId];
+
+            // LOG DE DIAGNÓSTICO — confirma que os eventos chegam
+            log('info', '[DIAG] ' + action + ' nodeid=' + nodeId +
+                ' meshid=' + (currentMesh || '-') +
+                ' previousMesh=' + (previousMesh || 'desconhecido'));
+
+            if (action === 'changenode' && previousMesh && currentMesh &&
+                previousMesh !== currentMesh && quarantineMeshId) {
+
+                // O device saiu do grupo de quarentena para outro grupo?
+                if (previousMesh === quarantineMeshId && currentMesh !== quarantineMeshId) {
+                    log('info', 'Dispositivo aprovado detetado: node=' + nodeId +
+                        ', de ' + previousMesh + ' para ' + currentMesh);
+                    processApproval(nodeId);
+                }
+            }
+
+            // Atualizar o cache DEPOIS de verificar (para ter o "previous" correto)
+            nodeLastMesh[nodeId] = currentMesh;
         }
 
-        if (!quarantineMeshId) return;
-
-        const action = event.action || '';
-        if (!MOVE_ACTIONS.includes(action)) return;
-
-        const oldMesh = event.oldmeshid || event.oldMeshId || event.previousmeshid;
-        const newMesh = event.meshid || event.newmeshid;
-        const nodeId  = event.nodeid || event.nodeId;
-
-        if (!nodeId || !oldMesh || !newMesh) return;
-        if (oldMesh !== quarantineMeshId) return;
-        if (newMesh === quarantineMeshId) return;
-
-        log('info', 'Dispositivo aprovado detetado: node=' + nodeId + ', de ' + oldMesh + ' para ' + newMesh);
-        processApproval(nodeId);
+        // Limpar cache quando um node é removido
+        if (action === 'removenode' && nodeId) {
+            delete nodeLastMesh[nodeId];
+        }
     };
-
     // -------------------------------------------------------------------------
     // HOOK: hook_agentCoreIsStable
     // -------------------------------------------------------------------------
