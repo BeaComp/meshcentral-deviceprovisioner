@@ -322,17 +322,19 @@ module.exports.deviceprovisioner = function (parent) {
         if (!quarantineMeshId) return;
         const db = parent.parent && parent.parent.db;
         
-        // CORREÇÃO: O MeshCentral usa db.GetAllType em vez de db.GetAllNodes
         if (!db || typeof db.GetAllType !== 'function') {
             log('warn', 'Função GetAllType não encontrada na DB do MeshCentral.');
             return;
         }
 
-        // Buscar todos os documentos do tipo 'node' no domínio raiz ('')
-        db.GetAllType('node', '', function (err, nodes) {
+        // CORREÇÃO AQUI: Apenas 2 argumentos ('node' e a função de callback)
+        db.GetAllType('node', function (err, nodes) {
             if (err || !nodes) return;
 
             nodes.forEach(function (node) {
+                // Segurança: Garantir que processamos apenas os nós do domínio raiz
+                if (node.domain !== '') return;
+
                 const nodeId     = node._id;
                 const currentMesh = node.meshid;
                 const prevMesh   = nodeLastMesh[nodeId];
