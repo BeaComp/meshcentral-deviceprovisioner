@@ -76,7 +76,7 @@ cp -r meshcentral-deviceprovisioner /opt/meshcentral/meshcentral-data/plugins/
     "": {
       "pluginsConfig": {
         "deviceprovisioner": {
-          "quarantineMeshName": "quarentena",
+          "quarantineMeshId": "XXXXXXXX",
           "provisioningApiUrl": "https://tua-api/api/devices/approved",
           "provisioningApiToken": "Bearer SEU_TOKEN",
           "apiTimeoutMs": 10000,
