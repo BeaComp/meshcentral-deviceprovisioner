@@ -68,16 +68,16 @@ module.exports.deviceprovisioner = function (parent) {
                     const serverConfigPath = path.join(
                         __dirname, '..', '..', 'config.json'
                     );
-                    log('info', 'A tentar ler config do servidor em: ' + serverConfigPath);
+
                     if (fs.existsSync(serverConfigPath)) {
                         const serverConfigFile = JSON.parse(
                             fs.readFileSync(serverConfigPath, 'utf8')
                         );
                         const domains = serverConfigFile.domains || {};
-                        log('info', 'Domínios encontrados: ' + Object.keys(domains).join(', '));
+
                         for (const domainKey of Object.keys(domains)) {
                             const domain = domains[domainKey];
-                            log('info', `Domínio "${domainKey}" keys: ` + Object.keys(domain || {}).join(', '));
+
                             if (domain &&
                                 domain.pluginsConfig &&
                                 domain.pluginsConfig.deviceprovisioner) {
@@ -134,10 +134,6 @@ module.exports.deviceprovisioner = function (parent) {
             if (config.quarantineMeshId) quarantineMeshId = config.quarantineMeshId;
             if (config.productionMeshId) productionMeshId = config.productionMeshId;
             if (config.revokedMeshId) revokedMeshId = config.revokedMeshId;
-
-            log('info', `Configuração carregada de: ${source || 'defaults'}`);
-            log('info', 'Configuração final:', config);
-
         } catch (e) {
             log('error', 'Erro ao carregar configuração: ' + e.message);
         }
