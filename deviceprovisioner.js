@@ -307,11 +307,12 @@ module.exports.deviceprovisioner = function (parent) {
             }
             const node = nodes[0];
 
-            // O sysinfo é guardado com _id = nodeId + '/si'
-            const sysinfoId = nodeId + '/si';
+            // Formato real do sysinfo na DB: _id = "si" + nodeId
+            // Ex: "sinode//ABC..." para nodeId "node//ABC..."
+            const sysinfoId = 'si' + nodeId;
             parent.parent.db.Get(sysinfoId, function (err2, docs) {
                 const sysinfo = (!err2 && docs && docs.length > 0) ? docs[0] : null;
-                if (!sysinfo) log('warn', `Sysinfo não encontrado para ${nodeId} (id: ${sysinfoId}) — hardware vazio`);
+                if (!sysinfo) log('warn', `Sysinfo não encontrado para ${nodeId} (id tentado: ${sysinfoId})`);
                 const payload = buildPayload(node, sysinfo);
                 callProvisioningApi(payload, nodeId, 1);
             });
@@ -327,7 +328,7 @@ module.exports.deviceprovisioner = function (parent) {
             }
             const node = nodes[0];
 
-            const sysinfoId = nodeId + '/si';
+            const sysinfoId = 'si' + nodeId;
             parent.parent.db.Get(sysinfoId, function (err2, docs) {
                 const sysinfo = (!err2 && docs && docs.length > 0) ? docs[0] : null;
                 const payload = buildRevocationPayload(node, sysinfo);
