@@ -306,9 +306,8 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            const sysInfoId = nodeId.replace(/^node\/\//, '');
-            parent.parent.db.GetSysInfo(sysInfoId, function (err2, sysinfo) {
-                const payload = buildPayload(node, err2 ? null : sysinfo);
+            parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
+                const payload = buildPayload(node, sysinfo);
                 callProvisioningApi(payload, nodeId, 1);
             });
         });
@@ -322,9 +321,7 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            // Normalizar nodeId para GetSysInfo — algumas versões esperam sem prefixo
-            const sysInfoId = nodeId.replace(/^node\/\//, '');
-            parent.parent.db.GetSysInfo(sysInfoId, function (err2, sysinfo) {
+            parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
                 const payload = buildRevocationPayload(node, err2 ? null : sysinfo);
                 log('info', `Revogando dispositivo: ${nodeId}`, payload);
                 callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
