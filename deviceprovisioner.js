@@ -260,13 +260,21 @@ module.exports.deviceprovisioner = function (parent) {
 
         if (sysinfo) {
             const hw = sysinfo.hardware || {};
+            const ids = hw.identifiers || {};
             payload.hardware = {
-                serial_number: hw.identifiers && hw.identifiers.product_serial ? hw.identifiers.product_serial : null,
-                product_name: hw.identifiers && hw.identifiers.product_name ? hw.identifiers.product_name : null,
-                uuid: hw.identifiers && hw.identifiers.product_uuid ? hw.identifiers.product_uuid : null,
+                // Raspberry Pi / Linux usa board_serial e board_name
+                serial_number: ids.board_serial || ids.product_serial || null,
+                product_name: ids.board_name || ids.product_name || null,
+                board_vendor: ids.board_vendor || null,
+                uuid: ids.product_uuid || null,
+                cpu_name: ids.cpu_name || null,
+                bios_mode: ids.bios_mode || null,
+                // macs/cpus/memory/storage só presentes em agentes Windows
                 macs: hw.macs || [],
                 cpus: (hw.cpus || []).map(c => c.name || c),
-                total_ram_mb: hw.memory && hw.memory.total ? Math.round(hw.memory.total / (1024 * 1024)) : null,
+                total_ram_mb: (hw.memory && hw.memory.total)
+                    ? Math.round(hw.memory.total / (1024 * 1024))
+                    : null,
                 storage: (hw.storage || []).map(d => ({
                     name: d.name,
                     size_gb: d.size ? Math.round(d.size / 1e9) : null
