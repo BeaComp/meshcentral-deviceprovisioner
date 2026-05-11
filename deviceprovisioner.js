@@ -44,40 +44,57 @@ module.exports.deviceprovisioner = function (parent) {
     function loadConfig() {
         try {
             let raw = null;
+            let source = null;
 
+            // ── Prioridade 1: meshcentral-data/config.json (servidor) ─────────
+            // Adicionar aqui:
+            //   "domains": { "": { "pluginsConfig": { "deviceprovisioner": { ... } } } }
             const serverConfig = parent.parent && parent.parent.config;
             if (serverConfig && serverConfig.domains) {
                 for (const domainKey of Object.keys(serverConfig.domains)) {
                     const domain = serverConfig.domains[domainKey];
-                    if (domain && domain.pluginsConfig && domain.pluginsConfig.deviceprovisioner) {
+                    if (domain &&
+                        domain.pluginsConfig &&
+                        domain.pluginsConfig.deviceprovisioner) {
                         raw = domain.pluginsConfig.deviceprovisioner;
-                        log('info', `Configuração carregada do servidor (domínio: "${domainKey}")`);
+                        source = `meshcentral-data/config.json (domínio: "${domainKey}")`;
                         break;
                     }
                 }
             }
 
+            // ── Prioridade 2: config.json do plugin (fallback) ────────────────
+            // Localização: meshcentral-data/plugins/deviceprovisioner/config.json
             if (!raw) {
                 try {
                     const pluginConfigFile = require(path.join(__dirname, 'config.json'));
                     if (pluginConfigFile && pluginConfigFile.pluginConfig) {
                         raw = pluginConfigFile.pluginConfig;
-                        log('info', 'Configuração carregada do config.json do plugin.');
+                        source = 'plugin/config.json (fallback)';
                     }
                 } catch (e2) {
                     log('warn', 'Não foi possível ler config.json do plugin: ' + e2.message);
                 }
             }
 
+            if (!raw) {
+                log('warn',
+                    'Nenhuma configuração encontrada — usando defaults. ' +
+                    'Recomendado: adicionar "pluginsConfig.deviceprovisioner" ' +
+                    'ao meshcentral-data/config.json no domínio correcto.'
+                );
+            }
+
+            // ── Aplicar defaults + configuração encontrada ────────────────────
             config = Object.assign({
                 quarantineMeshName: 'QUARANTINE',
                 quarantineMeshId: null,
                 productionMeshName: 'PRODUCTION',
                 productionMeshId: null,
-                revokedMeshName: 'REVOKED',          // ← nome do grupo no MeshCentral
+                revokedMeshName: 'REVOKED',
                 revokedMeshId: null,
                 provisioningApiUrl: '',
-                revocationApiUrl: '',                 // ← URL da API de revogação no Proxy
+                revocationApiUrl: '',
                 provisioningApiToken: '',
                 apiTimeoutMs: 10000,
                 retryOnFailure: true,
@@ -85,12 +102,14 @@ module.exports.deviceprovisioner = function (parent) {
                 logLevel: 'info'
             }, raw || {});
 
-            // Resolver IDs fixos definidos na config
+            // Pré-carregar IDs se definidos directamente na config
             if (config.quarantineMeshId) quarantineMeshId = config.quarantineMeshId;
             if (config.productionMeshId) productionMeshId = config.productionMeshId;
             if (config.revokedMeshId) revokedMeshId = config.revokedMeshId;
 
+            log('info', `Configuração carregada de: ${source || 'defaults'}`);
             log('info', 'Configuração final:', config);
+
         } catch (e) {
             log('error', 'Erro ao carregar configuração: ' + e.message);
         }
