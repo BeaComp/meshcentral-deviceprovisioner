@@ -46,9 +46,7 @@ module.exports.deviceprovisioner = function (parent) {
             let raw = null;
             let source = null;
 
-            // ── Prioridade 1: meshcentral-data/config.json (servidor) ─────────
-            // Adicionar aqui:
-            //   "domains": { "": { "pluginsConfig": { "deviceprovisioner": { ... } } } }
+            // ── Prioridade 1: config do servidor via parent.parent.config ──────
             const serverConfig = parent.parent && parent.parent.config;
             if (serverConfig && serverConfig.domains) {
                 for (const domainKey of Object.keys(serverConfig.domains)) {
@@ -57,14 +55,46 @@ module.exports.deviceprovisioner = function (parent) {
                         domain.pluginsConfig &&
                         domain.pluginsConfig.deviceprovisioner) {
                         raw = domain.pluginsConfig.deviceprovisioner;
-                        source = `meshcentral-data/config.json (domínio: "${domainKey}")`;
+                        source = `parent.parent.config (domínio: "${domainKey}")`;
                         break;
                     }
                 }
             }
 
-            // ── Prioridade 2: config.json do plugin (fallback) ────────────────
-            // Localização: meshcentral-data/plugins/deviceprovisioner/config.json
+            // ── Prioridade 2: ler meshcentral-data/config.json directamente ───
+            if (!raw) {
+                try {
+                    const fs = require('fs');
+                    const serverConfigPath = path.join(
+                        __dirname, '..', '..', 'config.json'
+                    );
+                    log('info', 'A tentar ler config do servidor em: ' + serverConfigPath);
+                    if (fs.existsSync(serverConfigPath)) {
+                        const serverConfigFile = JSON.parse(
+                            fs.readFileSync(serverConfigPath, 'utf8')
+                        );
+                        const domains = serverConfigFile.domains || {};
+                        log('info', 'Domínios encontrados: ' + Object.keys(domains).join(', '));
+                        for (const domainKey of Object.keys(domains)) {
+                            const domain = domains[domainKey];
+                            log('info', `Domínio "${domainKey}" keys: ` + Object.keys(domain || {}).join(', '));
+                            if (domain &&
+                                domain.pluginsConfig &&
+                                domain.pluginsConfig.deviceprovisioner) {
+                                raw = domain.pluginsConfig.deviceprovisioner;
+                                source = `meshcentral-data/config.json (domínio: "${domainKey}")`;
+                                break;
+                            }
+                        }
+                    } else {
+                        log('warn', 'Ficheiro não encontrado: ' + serverConfigPath);
+                    }
+                } catch (e3) {
+                    log('warn', 'Erro ao ler config.json do servidor: ' + e3.message);
+                }
+            }
+
+            // ── Prioridade 3: config.json do próprio plugin (fallback) ────────
             if (!raw) {
                 try {
                     const pluginConfigFile = require(path.join(__dirname, 'config.json'));
@@ -80,8 +110,7 @@ module.exports.deviceprovisioner = function (parent) {
             if (!raw) {
                 log('warn',
                     'Nenhuma configuração encontrada — usando defaults. ' +
-                    'Recomendado: adicionar "pluginsConfig.deviceprovisioner" ' +
-                    'ao meshcentral-data/config.json no domínio correcto.'
+                    'Adiciona "pluginsConfig.deviceprovisioner" ao meshcentral-data/config.json'
                 );
             }
 
@@ -102,7 +131,6 @@ module.exports.deviceprovisioner = function (parent) {
                 logLevel: 'info'
             }, raw || {});
 
-            // Pré-carregar IDs se definidos directamente na config
             if (config.quarantineMeshId) quarantineMeshId = config.quarantineMeshId;
             if (config.productionMeshId) productionMeshId = config.productionMeshId;
             if (config.revokedMeshId) revokedMeshId = config.revokedMeshId;
