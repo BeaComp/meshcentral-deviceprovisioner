@@ -297,7 +297,7 @@ module.exports.deviceprovisioner = function (parent) {
     }
 
     // -------------------------------------------------------------------------
-    // Processar aprovação (sem alterações ao teu código original)
+    // Processar aprovação — padrão original que já funcionava
     // -------------------------------------------------------------------------
     function processApproval(nodeId) {
         parent.parent.db.Get(nodeId, function (err, nodes) {
@@ -306,14 +306,15 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
-                const payload = buildPayload(node, sysinfo);
+            const sysInfoId = nodeId.replace(/^node\/\//, '');
+            parent.parent.db.GetSysInfo(sysInfoId, function (err2, sysinfo) {
+                const payload = buildPayload(node, err2 ? null : sysinfo);
                 callProvisioningApi(payload, nodeId, 1);
             });
         });
     }
 
-    // [NOVO] Processar revogação — mesmo padrão do processApproval
+    // Processar revogação — mesmo padrão
     function processRevocation(nodeId) {
         parent.parent.db.Get(nodeId, function (err, nodes) {
             if (err || !nodes || nodes.length === 0) {
@@ -321,15 +322,26 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
-                const payload = buildRevocationPayload(node, sysinfo);
+            // Normalizar nodeId para GetSysInfo — algumas versões esperam sem prefixo
+            const sysInfoId = nodeId.replace(/^node\/\//, '');
+            parent.parent.db.GetSysInfo(sysInfoId, function (err2, sysinfo) {
+                const payload = buildRevocationPayload(node, err2 ? null : sysinfo);
                 log('info', `Revogando dispositivo: ${nodeId}`, payload);
-
-                // Chamar a API de revogação no Proxy
-                // O Proxy vai: marcar como revogado + remover da lista de aprovados
                 callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
             });
         });
+    }
+
+    // Obter sysinfo de forma segura — fallback se GetSysInfo falhar
+    function _getNodeSysinfo(nodeId, callback) {
+        if (typeof parent.parent.db.GetSysInfo === 'function') {
+            parent.parent.db.GetSysInfo(nodeId, function (err, sysinfo) {
+                callback(err ? null : sysinfo);
+            });
+        } else {
+            log('warn', `GetSysInfo indisponível para ${nodeId} — payload sem hardware info`);
+            callback(null);
+        }
     }
 
     // -------------------------------------------------------------------------
