@@ -74,10 +74,10 @@ module.exports.deviceprovisioner = function (parent) {
                 quarantineMeshId: null,
                 productionMeshName: 'PRODUCTION',
                 productionMeshId: null,
-                revokedMeshName: 'REVOKED',
+                revokedMeshName: 'REVOKED',          // ← nome do grupo no MeshCentral
                 revokedMeshId: null,
                 provisioningApiUrl: '',
-                revocationApiUrl: '',
+                revocationApiUrl: '',                 // ← URL da API de revogação no Proxy
                 provisioningApiToken: '',
                 apiTimeoutMs: 10000,
                 retryOnFailure: true,
@@ -96,6 +96,24 @@ module.exports.deviceprovisioner = function (parent) {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Normalização de IDs — o MeshCentral usa o prefixo "mesh//" internamente
+    // mas os configs normalmente não o incluem. Normalizar antes de comparar.
+    // -------------------------------------------------------------------------
+
+    function normalizeMeshId(id) {
+        if (!id) return null;
+        // Remover prefixo se existir, para comparar sempre sem prefixo
+        return id.replace(/^mesh\/\//, '');
+    }
+
+    function meshIdsEqual(a, b) {
+        return normalizeMeshId(a) === normalizeMeshId(b);
+    }
+
+    // -------------------------------------------------------------------------
+    // Resolver mesh IDs por nome (quarentena, produção, revogado)
+    // -------------------------------------------------------------------------
 
     function resolveMeshIdByName(meshName, onResolved) {
         // 1. Tentar em memória primeiro
@@ -139,11 +157,15 @@ module.exports.deviceprovisioner = function (parent) {
         resolveMeshIdByName(config.quarantineMeshName, callback);
     }
 
+    // [NOVO] Resolver o grupo revogado — mesmo padrão do quarentena
     function resolveRevokedMeshId(callback) {
         if (revokedMeshId) return callback(revokedMeshId);
         resolveMeshIdByName(config.revokedMeshName, callback);
     }
 
+    // -------------------------------------------------------------------------
+    // Chamar API genérica com retry
+    // -------------------------------------------------------------------------
     function callApi(apiUrl, payload, nodeId, attempt, label) {
         if (!apiUrl) {
             log('warn', `${label}: URL não configurado. Saltar chamada.`);
@@ -214,10 +236,14 @@ module.exports.deviceprovisioner = function (parent) {
         }, delay);
     }
 
+    // Mantém a função original para não quebrar código existente
     function callProvisioningApi(payload, nodeId, attempt) {
         callApi(config.provisioningApiUrl, payload, nodeId, attempt, 'PROVISIONING');
     }
 
+    // -------------------------------------------------------------------------
+    // Montar payload de aprovação (sem alterações ao teu código original)
+    // -------------------------------------------------------------------------
     function buildPayload(node, sysinfo) {
         const payload = {
             event: 'device_approved',
@@ -251,11 +277,15 @@ module.exports.deviceprovisioner = function (parent) {
         return payload;
     }
 
+    // [NOVO] Montar payload de revogação
     function buildRevocationPayload(node, sysinfo) {
         const base = buildPayload(node, sysinfo);
 
+        // Sobrescrever apenas o que muda em relação ao payload de aprovação
         base.event = 'device_revoked';
 
+        // O Proxy precisa do serial para remover da lista de pré-aprovados
+        // Tenta extrair de várias fontes por ordem de fiabilidade
         const hw = (sysinfo && sysinfo.hardware) || {};
         base.serial = hw.identifiers && hw.identifiers.product_serial
             ? hw.identifiers.product_serial
@@ -266,6 +296,9 @@ module.exports.deviceprovisioner = function (parent) {
         return base;
     }
 
+    // -------------------------------------------------------------------------
+    // Processar aprovação (sem alterações ao teu código original)
+    // -------------------------------------------------------------------------
     function processApproval(nodeId) {
         parent.parent.db.Get(nodeId, function (err, nodes) {
             if (err || !nodes || nodes.length === 0) {
@@ -280,6 +313,7 @@ module.exports.deviceprovisioner = function (parent) {
         });
     }
 
+    // [NOVO] Processar revogação — mesmo padrão do processApproval
     function processRevocation(nodeId) {
         parent.parent.db.Get(nodeId, function (err, nodes) {
             if (err || !nodes || nodes.length === 0) {
@@ -291,6 +325,8 @@ module.exports.deviceprovisioner = function (parent) {
                 const payload = buildRevocationPayload(node, sysinfo);
                 log('info', `Revogando dispositivo: ${nodeId}`, payload);
 
+                // Chamar a API de revogação no Proxy
+                // O Proxy vai: marcar como revogado + remover da lista de aprovados
                 callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
             });
         });
@@ -302,6 +338,7 @@ module.exports.deviceprovisioner = function (parent) {
     plugin.server_startup = function () {
         loadConfig();
 
+        // Resolver grupo de quarentena
         resolveQuarantineMeshId(function (meshId) {
             quarantineMeshId = meshId;
             if (!meshId) {
@@ -312,6 +349,7 @@ module.exports.deviceprovisioner = function (parent) {
             }
         });
 
+        // [NOVO] Resolver grupo de revogados — mesmo padrão
         resolveRevokedMeshId(function (meshId) {
             revokedMeshId = meshId;
             if (!meshId) {
@@ -326,6 +364,9 @@ module.exports.deviceprovisioner = function (parent) {
         log('info', 'Plugin DeviceProvisioner iniciado.');
     };
 
+    // -------------------------------------------------------------------------
+    // Polling — detectar mudanças de grupo
+    // -------------------------------------------------------------------------
     let nodeLastMesh = {};
     let pollingTimer = null;
 
@@ -336,6 +377,7 @@ module.exports.deviceprovisioner = function (parent) {
     }
 
     function pollForGroupChanges() {
+        // Aguardar que pelo menos o quarantineMeshId esteja resolvido
         if (!quarantineMeshId) return;
 
         const db = parent.parent && parent.parent.db;
@@ -354,21 +396,26 @@ module.exports.deviceprovisioner = function (parent) {
                 const currentMesh = node.meshid;
                 const prevMesh = nodeLastMesh[nodeId];
 
+                // Primeira vez que vemos este node — só registar, não processar
                 if (prevMesh === undefined) {
                     nodeLastMesh[nodeId] = currentMesh;
                     return;
                 }
 
+                // Sem mudança — ignorar
                 if (prevMesh === currentMesh) return;
 
+                // Mudança detectada — actualizar estado
                 nodeLastMesh[nodeId] = currentMesh;
                 log('info', `[POLL] Node ${nodeId} mudou de ${prevMesh} para ${currentMesh}`);
+                log('debug', `[POLL] Comparando: prev=${normalizeMeshId(prevMesh)} quarantine=${normalizeMeshId(quarantineMeshId)} revoked=${normalizeMeshId(revokedMeshId)}`);
 
-                if (prevMesh === quarantineMeshId && currentMesh !== quarantineMeshId) {
+                // ── Aprovação: saiu da quarentena ─────────────────────────────
+                if (meshIdsEqual(prevMesh, quarantineMeshId) && !meshIdsEqual(currentMesh, quarantineMeshId)) {
 
-                    // [NOVO] Se foi para o grupo revogado directamente da quarentena,
+                    // Se foi para o grupo revogado directamente da quarentena,
                     // tratar como revogação (não como aprovação)
-                    if (revokedMeshId && currentMesh === revokedMeshId) {
+                    if (revokedMeshId && meshIdsEqual(currentMesh, revokedMeshId)) {
                         log('info', `Dispositivo movido da quarentena directamente para revogados: ${nodeId}`);
                         processRevocation(nodeId);
                         return;
@@ -379,8 +426,8 @@ module.exports.deviceprovisioner = function (parent) {
                     return;
                 }
 
-                // [NOVO] Revogação: foi para o grupo revogado (de qualquer grupo)
-                if (revokedMeshId && currentMesh === revokedMeshId && prevMesh !== revokedMeshId) {
+                // Revogação: foi para o grupo revogado (de qualquer grupo)
+                if (revokedMeshId && meshIdsEqual(currentMesh, revokedMeshId) && !meshIdsEqual(prevMesh, revokedMeshId)) {
                     log('info', `Dispositivo revogado via polling: ${nodeId} (era grupo ${prevMesh})`);
                     processRevocation(nodeId);
                     return;
@@ -398,10 +445,9 @@ module.exports.deviceprovisioner = function (parent) {
         const nodeId = meshAgent.dbNodeKey;
         const meshId = meshAgent.dbMeshKey;
 
-        if (meshId === quarantineMeshId) {
+        if (meshIdsEqual(meshId, quarantineMeshId)) {
             log('info', `Novo dispositivo em quarentena: ${nodeId} (aguarda aprovação manual)`);
-        } else if (meshId === revokedMeshId) {
-            // [NOVO] Dispositivo revogado reconectou — ignorar e alertar
+        } else if (revokedMeshId && meshIdsEqual(meshId, revokedMeshId)) {
             log('warn', `Dispositivo REVOGADO tentou reconectar: ${nodeId} — ignorar`);
         } else {
             log('debug', `Agente online: ${nodeId} no grupo ${meshId}`);
