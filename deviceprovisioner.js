@@ -306,9 +306,15 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            // Sysinfo é opcional — enviar payload sem bloquear se não estiver disponível
-            const payload = buildPayload(node, null);
-            callProvisioningApi(payload, nodeId, 1);
+
+            // O sysinfo é guardado com _id = nodeId + '/si'
+            const sysinfoId = nodeId + '/si';
+            parent.parent.db.Get(sysinfoId, function (err2, docs) {
+                const sysinfo = (!err2 && docs && docs.length > 0) ? docs[0] : null;
+                if (!sysinfo) log('warn', `Sysinfo não encontrado para ${nodeId} (id: ${sysinfoId}) — hardware vazio`);
+                const payload = buildPayload(node, sysinfo);
+                callProvisioningApi(payload, nodeId, 1);
+            });
         });
     }
 
@@ -320,9 +326,14 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            const payload = buildRevocationPayload(node, null);
-            log('info', `Revogando dispositivo: ${nodeId}`, payload);
-            callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
+
+            const sysinfoId = nodeId + '/si';
+            parent.parent.db.Get(sysinfoId, function (err2, docs) {
+                const sysinfo = (!err2 && docs && docs.length > 0) ? docs[0] : null;
+                const payload = buildRevocationPayload(node, sysinfo);
+                log('info', `Revogando dispositivo: ${nodeId}`, payload);
+                callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
+            });
         });
     }
 

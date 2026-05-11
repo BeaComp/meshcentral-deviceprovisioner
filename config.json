@@ -21,7 +21,7 @@
     "quarantineMeshId": "a00nGTVUZjtN0fJpjCsJWFFz@7rOyq4kAVvInGMj1p8aLc6xZt6dVmJZ9@jJ1Y09",
     "revokedMeshId": "hS5yfvrYkKX3BG3gfH44DJpmIAYIxKuRnabd4NRbhWjxiYXKoxEy$3ooAabV4QpK",
     "productionMeshId": "sEYxlfO9GHdNtDOggrW3lMEBTqw9bAmHBBfE3uC74iYjGFbBh8CujmqanlNRmnWP",
-    "provisioningApiUrl": "https://wise-breeze-56.webhook.cool/",
+    "provisioningApiUrl": "https://wild-eagle-71.webhook.cool",
     "revocationApiUrl": "https://wild-eagle-71.webhook.cool",
     "provisioningApiToken": "Bearer teste",
     "apiTimeoutMs": 10000,
