@@ -297,7 +297,7 @@ module.exports.deviceprovisioner = function (parent) {
     }
 
     // -------------------------------------------------------------------------
-    // Processar aprovação — padrão original que já funcionava
+    // Processar aprovação
     // -------------------------------------------------------------------------
     function processApproval(nodeId) {
         parent.parent.db.Get(nodeId, function (err, nodes) {
@@ -306,14 +306,13 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
-                const payload = buildPayload(node, sysinfo);
-                callProvisioningApi(payload, nodeId, 1);
-            });
+            // Sysinfo é opcional — enviar payload sem bloquear se não estiver disponível
+            const payload = buildPayload(node, null);
+            callProvisioningApi(payload, nodeId, 1);
         });
     }
 
-    // Processar revogação — mesmo padrão
+    // Processar revogação
     function processRevocation(nodeId) {
         parent.parent.db.Get(nodeId, function (err, nodes) {
             if (err || !nodes || nodes.length === 0) {
@@ -321,24 +320,10 @@ module.exports.deviceprovisioner = function (parent) {
                 return;
             }
             const node = nodes[0];
-            parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
-                const payload = buildRevocationPayload(node, err2 ? null : sysinfo);
-                log('info', `Revogando dispositivo: ${nodeId}`, payload);
-                callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
-            });
+            const payload = buildRevocationPayload(node, null);
+            log('info', `Revogando dispositivo: ${nodeId}`, payload);
+            callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
         });
-    }
-
-    // Obter sysinfo de forma segura — fallback se GetSysInfo falhar
-    function _getNodeSysinfo(nodeId, callback) {
-        if (typeof parent.parent.db.GetSysInfo === 'function') {
-            parent.parent.db.GetSysInfo(nodeId, function (err, sysinfo) {
-                callback(err ? null : sysinfo);
-            });
-        } else {
-            log('warn', `GetSysInfo indisponível para ${nodeId} — payload sem hardware info`);
-            callback(null);
-        }
     }
 
     // -------------------------------------------------------------------------
