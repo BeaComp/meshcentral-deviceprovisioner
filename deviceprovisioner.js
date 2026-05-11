@@ -4,8 +4,8 @@
  * MeshCentral Plugin: Device Provisioner
  *
  * Objetivo: Detetar quando um dispositivo é movido do grupo de quarentena
- * para qualquer outro grupo (aprovação), e chamar uma API POST com as
- * informações do dispositivo (node_id, meshid, hostname, MACs, serial, etc.)
+ * para qualquer outro grupo (aprovação), e quando é movido para o grupo
+ * revogado (revogação), chamando a API correspondente em cada caso.
  *
  * Hooks utilizados (todos documentados oficialmente):
  *   - server_startup              → inicialização e carregamento de config
@@ -25,6 +25,8 @@ module.exports.deviceprovisioner = function (parent) {
     // -------------------------------------------------------------------------
     let config = {};
     let quarantineMeshId = null;
+    let revokedMeshId = null;
+    let productionMeshId = null;
     let pendingRetries = {};
 
     // -------------------------------------------------------------------------
@@ -38,7 +40,6 @@ module.exports.deviceprovisioner = function (parent) {
         if (data) console.log(prefix, msg, JSON.stringify(data, null, 2));
         else console.log(prefix, msg);
     }
-
 
     function loadConfig() {
         try {
@@ -56,7 +57,6 @@ module.exports.deviceprovisioner = function (parent) {
                 }
             }
 
-
             if (!raw) {
                 try {
                     const pluginConfigFile = require(path.join(__dirname, 'config.json'));
@@ -70,9 +70,14 @@ module.exports.deviceprovisioner = function (parent) {
             }
 
             config = Object.assign({
-                quarantineMeshName: 'quarentena',
+                quarantineMeshName: 'QUARANTINE',
                 quarantineMeshId: null,
+                productionMeshName: 'PRODUCTION',
+                productionMeshId: null,
+                revokedMeshName: 'REVOKED',
+                revokedMeshId: null,
                 provisioningApiUrl: '',
+                revocationApiUrl: '',
                 provisioningApiToken: '',
                 apiTimeoutMs: 10000,
                 retryOnFailure: true,
@@ -80,10 +85,10 @@ module.exports.deviceprovisioner = function (parent) {
                 logLevel: 'info'
             }, raw || {});
 
-            if (config.quarantineMeshId) {
-                quarantineMeshId = config.quarantineMeshId;
-                log('info', `quarantineMeshId definido diretamente na config: ${quarantineMeshId}`);
-            }
+            // Resolver IDs fixos definidos na config
+            if (config.quarantineMeshId) quarantineMeshId = config.quarantineMeshId;
+            if (config.productionMeshId) productionMeshId = config.productionMeshId;
+            if (config.revokedMeshId) revokedMeshId = config.revokedMeshId;
 
             log('info', 'Configuração final:', config);
         } catch (e) {
@@ -91,62 +96,67 @@ module.exports.deviceprovisioner = function (parent) {
         }
     }
 
-    function resolveQuarantineMeshId(callback) {
-        if (quarantineMeshId) {
-            return callback(quarantineMeshId);
-        }
 
+    function resolveMeshIdByName(meshName, onResolved) {
+        // 1. Tentar em memória primeiro
         const meshes = parent.parent && parent.parent.meshes;
         if (meshes && typeof meshes === 'object') {
-            const keys = Object.keys(meshes);
-            for (const key of keys) {
+            for (const key of Object.keys(meshes)) {
                 const m = meshes[key];
-                if (m && (m.name || '').toLowerCase() === config.quarantineMeshName.toLowerCase()) {
-                    log('info', `Grupo de quarentena resolvido (memória): ${m._id}`);
-                    return callback(m._id);
+                if (m && (m.name || '').toLowerCase() === meshName.toLowerCase()) {
+                    log('info', `Grupo "${meshName}" resolvido em memória: ${m._id}`);
+                    return onResolved(m._id);
                 }
             }
         }
 
+        // 2. Fallback para DB
         const db = parent.parent && parent.parent.db;
         if (db && typeof db.GetAllMeshes === 'function') {
             db.GetAllMeshes('', function (err, meshList) {
                 if (err || !meshList) {
-                    log('error', 'Erro ao listar grupos via DB: ' + (err || 'lista vazia'));
-                    return callback(null);
+                    log('error', `Erro ao listar grupos para "${meshName}": ` + (err || 'lista vazia'));
+                    return onResolved(null);
                 }
-                const match = meshList.find(function (m) {
-                    return (m.name || '').toLowerCase() === config.quarantineMeshName.toLowerCase();
-                });
+                const match = meshList.find(m =>
+                    (m.name || '').toLowerCase() === meshName.toLowerCase()
+                );
                 if (!match) {
-                    log('warn', `Grupo "${config.quarantineMeshName}" não encontrado. Cria o grupo e recarrega o plugin.`);
-                    return callback(null);
+                    log('warn', `Grupo "${meshName}" não encontrado. Cria o grupo e recarrega o plugin.`);
+                    return onResolved(null);
                 }
-                log('info', `Grupo de quarentena resolvido (DB): ${match._id}`);
-                callback(match._id);
+                log('info', `Grupo "${meshName}" resolvido via DB: ${match._id}`);
+                onResolved(match._id);
             });
         } else {
-            log('warn', 'parent.parent.meshes vazio e db.GetAllMeshes indisponível. ' +
-                'Define quarantineMeshId diretamente na config ou reinicia após criar o grupo.');
-            callback(null);
+            log('warn', `Não foi possível resolver o grupo "${meshName}" — define o meshId directamente na config.`);
+            onResolved(null);
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Chamar a API de provisionamento
-    // -------------------------------------------------------------------------
-    function callProvisioningApi(payload, nodeId, attempt) {
-        if (!config.provisioningApiUrl) {
-            log('warn', 'provisioningApiUrl não configurado. Saltar chamada à API.');
+    function resolveQuarantineMeshId(callback) {
+        if (quarantineMeshId) return callback(quarantineMeshId);
+        resolveMeshIdByName(config.quarantineMeshName, callback);
+    }
+
+    function resolveRevokedMeshId(callback) {
+        if (revokedMeshId) return callback(revokedMeshId);
+        resolveMeshIdByName(config.revokedMeshName, callback);
+    }
+
+    function callApi(apiUrl, payload, nodeId, attempt, label) {
+        if (!apiUrl) {
+            log('warn', `${label}: URL não configurado. Saltar chamada.`);
             return;
         }
 
         attempt = attempt || 1;
-        log('info', `Chamando API de provisionamento (tentativa ${attempt}) para ${nodeId}`, payload);
+        log('info', `${label}: chamada (tentativa ${attempt}) para ${nodeId}`, payload);
 
-        const parsed = url.parse(config.provisioningApiUrl);
+        const parsed = url.parse(apiUrl);
         const isHttps = parsed.protocol === 'https:';
         const body = JSON.stringify(payload);
+
         const options = {
             hostname: parsed.hostname,
             port: parsed.port || (isHttps ? 443 : 80),
@@ -160,53 +170,54 @@ module.exports.deviceprovisioner = function (parent) {
             }
         };
 
-        const transport = isHttps ? https : http;
-        const req = transport.request(options, function (res) {
+        const req = (isHttps ? https : http).request(options, function (res) {
             let data = '';
-            res.on('data', function (chunk) { data += chunk; });
+            res.on('data', chunk => data += chunk);
             res.on('end', function () {
                 if (res.statusCode >= 200 && res.statusCode < 300) {
-                    log('info', `API respondeu ${res.statusCode} para ${nodeId}:`, data);
-                    delete pendingRetries[nodeId];
+                    log('info', `${label}: API respondeu ${res.statusCode} para ${nodeId}`);
+                    delete pendingRetries[`${label}-${nodeId}`];
                 } else {
-                    log('warn', `API respondeu ${res.statusCode} para ${nodeId}. Body: ${data}`);
-                    scheduleRetry(payload, nodeId, attempt);
+                    log('warn', `${label}: API respondeu ${res.statusCode} para ${nodeId}. Body: ${data}`);
+                    scheduleRetry(apiUrl, payload, nodeId, attempt, label);
                 }
             });
         });
 
         req.on('timeout', function () {
             req.destroy();
-            log('warn', `Timeout na chamada à API para ${nodeId}`);
-            scheduleRetry(payload, nodeId, attempt);
+            log('warn', `${label}: timeout para ${nodeId}`);
+            scheduleRetry(apiUrl, payload, nodeId, attempt, label);
         });
 
         req.on('error', function (e) {
-            log('error', `Erro na chamada à API para ${nodeId}: ${e.message}`);
-            scheduleRetry(payload, nodeId, attempt);
+            log('error', `${label}: erro para ${nodeId}: ${e.message}`);
+            scheduleRetry(apiUrl, payload, nodeId, attempt, label);
         });
 
         req.write(body);
         req.end();
     }
 
-    function scheduleRetry(payload, nodeId, attempt) {
+    function scheduleRetry(apiUrl, payload, nodeId, attempt, label) {
+        const key = `${label}-${nodeId}`;
         if (!config.retryOnFailure || attempt >= config.maxRetries) {
-            log('error', `Máximo de tentativas atingido para ${nodeId}. Desistindo.`);
-            delete pendingRetries[nodeId];
+            log('error', `${label}: máximo de tentativas atingido para ${nodeId}. Desistindo.`);
+            delete pendingRetries[key];
             return;
         }
         const delay = Math.min(30000, 5000 * attempt);
-        log('info', `Retry em ${delay / 1000}s para ${nodeId} (tentativa ${attempt + 1}/${config.maxRetries})`);
-        pendingRetries[nodeId] = { attempt, payload };
+        log('info', `${label}: retry em ${delay / 1000}s para ${nodeId} (tentativa ${attempt + 1}/${config.maxRetries})`);
+        pendingRetries[key] = { attempt, payload };
         setTimeout(function () {
-            callProvisioningApi(payload, nodeId, attempt + 1);
+            callApi(apiUrl, payload, nodeId, attempt + 1, label);
         }, delay);
     }
 
-    // -------------------------------------------------------------------------
-    // Montar o payload com todas as informações do dispositivo
-    // -------------------------------------------------------------------------
+    function callProvisioningApi(payload, nodeId, attempt) {
+        callApi(config.provisioningApiUrl, payload, nodeId, attempt, 'PROVISIONING');
+    }
+
     function buildPayload(node, sysinfo) {
         const payload = {
             event: 'device_approved',
@@ -228,20 +239,33 @@ module.exports.deviceprovisioner = function (parent) {
                 product_name: hw.identifiers && hw.identifiers.product_name ? hw.identifiers.product_name : null,
                 uuid: hw.identifiers && hw.identifiers.product_uuid ? hw.identifiers.product_uuid : null,
                 macs: hw.macs || [],
-                cpus: (hw.cpus || []).map(function (c) { return c.name || c; }),
+                cpus: (hw.cpus || []).map(c => c.name || c),
                 total_ram_mb: hw.memory && hw.memory.total ? Math.round(hw.memory.total / (1024 * 1024)) : null,
-                storage: (hw.storage || []).map(function (d) {
-                    return { name: d.name, size_gb: d.size ? Math.round(d.size / 1e9) : null };
-                })
+                storage: (hw.storage || []).map(d => ({
+                    name: d.name,
+                    size_gb: d.size ? Math.round(d.size / 1e9) : null
+                }))
             };
         }
 
         return payload;
     }
 
-    // -------------------------------------------------------------------------
-    // Processar aprovação: buscar sysinfo e chamar API
-    // -------------------------------------------------------------------------
+    function buildRevocationPayload(node, sysinfo) {
+        const base = buildPayload(node, sysinfo);
+
+        base.event = 'device_revoked';
+
+        const hw = (sysinfo && sysinfo.hardware) || {};
+        base.serial = hw.identifiers && hw.identifiers.product_serial
+            ? hw.identifiers.product_serial
+            : (node.tags && node.tags.find(t => t.startsWith('serial:')))
+                ? node.tags.find(t => t.startsWith('serial:')).replace('serial:', '')
+                : node.name || null;
+
+        return base;
+    }
+
     function processApproval(nodeId) {
         parent.parent.db.Get(nodeId, function (err, nodes) {
             if (err || !nodes || nodes.length === 0) {
@@ -252,6 +276,22 @@ module.exports.deviceprovisioner = function (parent) {
             parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
                 const payload = buildPayload(node, sysinfo);
                 callProvisioningApi(payload, nodeId, 1);
+            });
+        });
+    }
+
+    function processRevocation(nodeId) {
+        parent.parent.db.Get(nodeId, function (err, nodes) {
+            if (err || !nodes || nodes.length === 0) {
+                log('error', `Revogação: não foi possível obter o node ${nodeId} da DB: ${err}`);
+                return;
+            }
+            const node = nodes[0];
+            parent.parent.db.GetSysInfo(nodeId, function (err2, sysinfo) {
+                const payload = buildRevocationPayload(node, sysinfo);
+                log('info', `Revogando dispositivo: ${nodeId}`, payload);
+
+                callApi(config.revocationApiUrl, payload, nodeId, 1, 'REVOCATION');
             });
         });
     }
@@ -267,16 +307,22 @@ module.exports.deviceprovisioner = function (parent) {
             if (!meshId) {
                 log('warn', 'Grupo de quarentena não resolvido no startup — nova tentativa em 5s.');
                 setTimeout(function () {
-                    resolveQuarantineMeshId(function (id) {
-                        quarantineMeshId = id;
-                    });
+                    resolveQuarantineMeshId(id => { quarantineMeshId = id; });
                 }, 5000);
             }
         });
 
-        // Iniciar polling para detetar mudanças de grupo
-        startPolling();
+        resolveRevokedMeshId(function (meshId) {
+            revokedMeshId = meshId;
+            if (!meshId) {
+                log('warn', 'Grupo de revogados não resolvido no startup — nova tentativa em 5s.');
+                setTimeout(function () {
+                    resolveRevokedMeshId(id => { revokedMeshId = id; });
+                }, 5000);
+            }
+        });
 
+        startPolling();
         log('info', 'Plugin DeviceProvisioner iniciado.');
     };
 
@@ -284,17 +330,15 @@ module.exports.deviceprovisioner = function (parent) {
     let pollingTimer = null;
 
     function startPolling() {
-        if (pollingTimer) return; // já está a correr
-        pollingTimer = setInterval(function () {
-            pollForGroupChanges();
-        }, 5000); // verifica a cada 5 segundos
+        if (pollingTimer) return;
+        pollingTimer = setInterval(pollForGroupChanges, 5000);
         log('info', 'Polling iniciado (intervalo: 5s).');
     }
 
     function pollForGroupChanges() {
         if (!quarantineMeshId) return;
-        const db = parent.parent && parent.parent.db;
 
+        const db = parent.parent && parent.parent.db;
         if (!db || typeof db.GetAllType !== 'function') {
             log('warn', 'Função GetAllType não encontrada na DB do MeshCentral.');
             return;
@@ -318,14 +362,28 @@ module.exports.deviceprovisioner = function (parent) {
                 if (prevMesh === currentMesh) return;
 
                 nodeLastMesh[nodeId] = currentMesh;
-
-                log('info', '[POLL] Node ' + nodeId +
-                    ' mudou de ' + prevMesh + ' para ' + currentMesh);
+                log('info', `[POLL] Node ${nodeId} mudou de ${prevMesh} para ${currentMesh}`);
 
                 if (prevMesh === quarantineMeshId && currentMesh !== quarantineMeshId) {
-                    log('info', 'Dispositivo aprovado detetado via polling: node=' +
-                        nodeId + ', de ' + prevMesh + ' para ' + currentMesh);
+
+                    // [NOVO] Se foi para o grupo revogado directamente da quarentena,
+                    // tratar como revogação (não como aprovação)
+                    if (revokedMeshId && currentMesh === revokedMeshId) {
+                        log('info', `Dispositivo movido da quarentena directamente para revogados: ${nodeId}`);
+                        processRevocation(nodeId);
+                        return;
+                    }
+
+                    log('info', `Dispositivo aprovado via polling: ${nodeId}`);
                     processApproval(nodeId);
+                    return;
+                }
+
+                // [NOVO] Revogação: foi para o grupo revogado (de qualquer grupo)
+                if (revokedMeshId && currentMesh === revokedMeshId && prevMesh !== revokedMeshId) {
+                    log('info', `Dispositivo revogado via polling: ${nodeId} (era grupo ${prevMesh})`);
+                    processRevocation(nodeId);
+                    return;
                 }
             });
         });
@@ -334,7 +392,7 @@ module.exports.deviceprovisioner = function (parent) {
     plugin.HandleEvent = function (event, domain) { };
 
     // -------------------------------------------------------------------------
-    // HOOK: hook_agentCoreIsStable
+    // HOOK: hook_agentCoreIsStable (sem alterações)
     // -------------------------------------------------------------------------
     plugin.hook_agentCoreIsStable = function (meshAgent) {
         const nodeId = meshAgent.dbNodeKey;
@@ -342,62 +400,12 @@ module.exports.deviceprovisioner = function (parent) {
 
         if (meshId === quarantineMeshId) {
             log('info', `Novo dispositivo em quarentena: ${nodeId} (aguarda aprovação manual)`);
+        } else if (meshId === revokedMeshId) {
+            // [NOVO] Dispositivo revogado reconectou — ignorar e alertar
+            log('warn', `Dispositivo REVOGADO tentou reconectar: ${nodeId} — ignorar`);
         } else {
             log('debug', `Agente online: ${nodeId} no grupo ${meshId}`);
         }
-    };
-
-    plugin.hook_setupHttpHandlers = function (app) {
-
-        const express = app && (app.expressApp || app.app || (typeof app.get === 'function' ? app : null));
-        if (!express || typeof express.get !== 'function') {
-            log('warn', 'hook_setupHttpHandlers: não foi possível obter o objeto Express. ' +
-                'Endpoints HTTP do plugin não serão registados.');
-            return;
-        }
-
-        express.get('/plugin/deviceprovisioner/status', function (req, res) {
-            if (!req.session || !req.session.userid) {
-                return res.status(401).json({ error: 'Não autenticado' });
-            }
-            res.json({
-                ok: true,
-                quarantineMeshId,
-                pendingRetries: Object.keys(pendingRetries).length,
-                config: {
-                    quarantineMeshName: config.quarantineMeshName,
-                    provisioningApiUrl: config.provisioningApiUrl,
-                    retryOnFailure: config.retryOnFailure,
-                    maxRetries: config.maxRetries,
-                    logLevel: config.logLevel
-                }
-            });
-        });
-
-        express.post('/plugin/deviceprovisioner/test', function (req, res) {
-            if (!req.session || !req.session.userid) {
-                return res.status(401).json({ error: 'Não autenticado' });
-            }
-            const nodeId = req.query.nodeId;
-            if (!nodeId) {
-                return res.status(400).json({ error: 'Parâmetro nodeId obrigatório' });
-            }
-            processApproval(nodeId);
-            res.json({ ok: true, message: `Chamada de aprovação iniciada para ${nodeId}` });
-        });
-
-        express.post('/plugin/deviceprovisioner/reload', function (req, res) {
-            if (!req.session || !req.session.userid) {
-                return res.status(401).json({ error: 'Não autenticado' });
-            }
-            loadConfig();
-            resolveQuarantineMeshId(function (meshId) {
-                quarantineMeshId = meshId;
-                res.json({ ok: true, quarantineMeshId });
-            });
-        });
-
-        log('info', 'Endpoints HTTP registados em /plugin/deviceprovisioner/*');
     };
 
     return plugin;
