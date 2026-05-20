@@ -1,20 +1,20 @@
 # MeshCentral Device Provisioner Plugin
 
-Plugin para MeshCentral que deteta quando um dispositivo é movido do grupo de **quarentena** para qualquer grupo aprovado, e chama uma API POST com todas as informações do dispositivo.
+Plugin for MeshCentral that detects when a device is moved from the **quarantine** group to any approved group, and calls a POST API with all device information.
 
-## Como funciona
+## How it works
 
 ```
-Dispositivo liga → entra no grupo "quarentena" → Admin move para grupo de produção
+Device connects → joins "quarantine" group → Admin moves to production group
                                                         ↓
-                                          Plugin deteta evento 'meshchange'
+                                          Plugin detects 'meshchange' event
                                                         ↓
-                                          Busca node + sysinfo na DB local
+                                          Fetches node + sysinfo from local DB
                                                         ↓
-                                          POST /api/devices/approved com payload JSON
+                                          POST /api/devices/approved with JSON payload
 ```
 
-## Payload enviado à API
+## Payload sent to the API
 
 ```json
 {
@@ -40,9 +40,9 @@ Dispositivo liga → entra no grupo "quarentena" → Admin move para grupo de pr
 }
 ```
 
-## Instalação
+## Installation
 
-### 1. Ativar plugins no config.json do MeshCentral
+### 1. Enable plugins in MeshCentral's config.json
 
 ```json
 {
@@ -52,20 +52,20 @@ Dispositivo liga → entra no grupo "quarentena" → Admin move para grupo de pr
 }
 ```
 
-### 2. Criar o grupo de quarentena
+### 2. Create the quarantine group
 
-Na interface do MeshCentral, cria um Device Group com o nome **exatamente igual** ao configurado em `quarantineMeshName` (default: `"quarentena"`). Os agentes novos devem ser instalados com o instalador **deste grupo**.
+In the MeshCentral interface, create a Device Group with a name **exactly matching** the value configured in `quarantineMeshName` (default: `"quarentena"`). New agents must be installed using the installer from **this group**.
 
-### 3. Instalar o plugin
+### 3. Install the plugin
 
-No MeshCentral, vai a **My Server → Plugins → Download Plugin** e introduz o URL do repositório.
+In MeshCentral, go to **My Server → Plugins → Download Plugin** and enter the repository URL.
 
-Ou manualmente:
+Or manually:
 ```bash
 cp -r meshcentral-deviceprovisioner /opt/meshcentral/meshcentral-data/plugins/
 ```
 
-### 4. Configurar no config.json do MeshCentral
+### 4. Configure in MeshCentral's config.json
 
 ```json
 {
@@ -77,8 +77,8 @@ cp -r meshcentral-deviceprovisioner /opt/meshcentral/meshcentral-data/plugins/
       "pluginsConfig": {
         "deviceprovisioner": {
           "quarantineMeshId": "XXXXXXXX",
-          "provisioningApiUrl": "https://tua-api/api/devices/approved",
-          "provisioningApiToken": "Bearer SEU_TOKEN",
+          "provisioningApiUrl": "https://your-api/api/devices/approved",
+          "provisioningApiToken": "Bearer YOUR_TOKEN",
           "apiTimeoutMs": 10000,
           "retryOnFailure": true,
           "maxRetries": 3,
@@ -90,22 +90,22 @@ cp -r meshcentral-deviceprovisioner /opt/meshcentral/meshcentral-data/plugins/
 }
 ```
 
-### 5. Reiniciar o MeshCentral
+### 5. Restart MeshCentral
 
 ```bash
 systemctl restart meshcentral
 ```
 
-## Endpoints de administração
+## Administration endpoints
 
-| Método | URL | Descrição |
-|--------|-----|-----------|
-| GET | `/plugin/deviceprovisioner/status` | Estado do plugin e configuração |
-| POST | `/plugin/deviceprovisioner/test?nodeId=node//...` | Forçar chamada para um node específico |
-| POST | `/plugin/deviceprovisioner/reload` | Recarregar config sem reiniciar |
+| Method | URL | Description |
+|--------|-----|-------------|
+| GET | `/plugin/deviceprovisioner/status` | Plugin status and configuration |
+| POST | `/plugin/deviceprovisioner/test?nodeId=node//...` | Force a call for a specific node |
+| POST | `/plugin/deviceprovisioner/reload` | Reload config without restarting |
 
-## Notas importantes
+## Important notes
 
-- O `sysinfo` (MACs, serial, CPU) pode ainda não estar disponível se o agente acabou de fazer check-in. O plugin envia o que existir; os dados de hardware aparecem tipicamente 30–60 segundos após a primeira ligação do agente.
-- Se a API falhar, o plugin faz retry com backoff exponencial (5s, 10s, 15s...) até `maxRetries`.
-- O evento interno `meshchange` é real e emitido pelo `webserver.js` do MeshCentral quando um node muda de grupo via interface ou API.
+- `sysinfo` (MACs, serial, CPU) may not yet be available if the agent just checked in. The plugin sends whatever is available; hardware data typically appears 30–60 seconds after the agent's first connection.
+- If the API call fails, the plugin retries with exponential backoff (5s, 10s, 15s...) up to `maxRetries`.
+- The internal `meshchange` event is real and emitted by MeshCentral's `webserver.js` whenever a node changes group via the UI or API.
